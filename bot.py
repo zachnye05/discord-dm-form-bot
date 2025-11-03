@@ -18,14 +18,16 @@ OWNER_ID = int(os.getenv("OWNER_ID", "0"))
 GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
 GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID")
 
+# sheet/tab names
 TARGETS_WS_NAME = "targets"
 MESSAGES_WS_NAME = "messages"
-RESPONSES_WS_NAME = "responses"  # optional logging tab
+RESPONSES_WS_NAME = "responses"  # optional tab to store responses
 
 INTENTS = discord.Intents.default()
 bot = commands.Bot(command_prefix="!", intents=INTENTS)
 
-MESSAGE_CACHE = {}  # refreshed every loop
+# cache for external messages
+MESSAGE_CACHE = {}
 
 
 # ------------------------------------------------
@@ -70,6 +72,7 @@ def update_target_row(ws, row_index: int, updates: dict):
 
 
 def load_messages():
+    """Load messages from 'messages' sheet into cache."""
     global MESSAGE_CACHE
     ws = get_ws(MESSAGES_WS_NAME)
     rows = ws.get_all_records()
@@ -78,6 +81,8 @@ def load_messages():
         k = r.get("key")
         c = r.get("content", "")
         if k:
+            # let people type "\n" in Sheets and have it become a real newline
+            c = c.replace("\\n", "\n")
             cache[k] = c
     MESSAGE_CACHE = cache
     return cache
@@ -87,50 +92,64 @@ def get_message(key: str, default: str = "") -> str:
     return MESSAGE_CACHE.get(key, default)
 
 
-def append_response(user_id: int, payload: dict):
-    # responses sheet is optional
+def append_response(user_id: int, username: str, payload: dict):
+    """Append form submission to responses sheet (if it exists)."""
     try:
         ws = get_ws(RESPONSES_WS_NAME)
     except Exception:
-        return
+        return  # sheet optional
     ws.append_row([
         iso_now(),
         str(user_id),
-        payload.get("reason", ""),
-        payload.get("contact", "")
+        username,
+        payload.get("first_name", ""),
+        payload.get("email", ""),
+        payload.get("phone", ""),
     ])
 
 
 # ------------------------------------------------
-# DISCORD UI: FORM MODAL
+# DISCORD UI: MODAL + BUTTON
 # ------------------------------------------------
-class InfoForm(discord.ui.Modal, title="Fill out the info"):
-    def __init__(self, user_id: int):
+class InfoForm(discord.ui.Modal, title="Fill out your info"):
+    def __init__(self, user_id: int, username: str):
         super().__init__()
         self.user_id = user_id
+        self.username = username
 
-        self.reason = discord.ui.TextInput(
-            label="Why are you filling this out?",
-            style=discord.TextStyle.paragraph,
+        self.first_name = discord.ui.TextInput(
+            label="First name",
+            style=discord.TextStyle.short,
             required=True,
         )
-        self.contact = discord.ui.TextInput(
-            label="Best contact (email/discord/etc.)",
+        self.email = discord.ui.TextInput(
+            label="Email",
+            style=discord.TextStyle.short,
+            required=True,
+        )
+        self.phone = discord.ui.TextInput(
+            label="Phone number",
             style=discord.TextStyle.short,
             required=True,
         )
 
-        self.add_item(self.reason)
-        self.add_item(self.contact)
+        self.add_item(self.first_name)
+        self.add_item(self.email)
+        self.add_item(self.phone)
 
     async def on_submit(self, interaction: discord.Interaction):
         # log to responses sheet
-        append_response(self.user_id, {
-            "reason": str(self.reason),
-            "contact": str(self.contact),
-        })
+        append_response(
+            self.user_id,
+            self.username,
+            {
+                "first_name": str(self.first_name),
+                "email": str(self.email),
+                "phone": str(self.phone),
+            },
+        )
 
-        # mark user as completed
+        # update targets sheet: completed + form_submitted
         try:
             targets, ws = load_targets()
             for idx, row in enumerate(targets, start=2):
@@ -144,36 +163,40 @@ class InfoForm(discord.ui.Modal, title="Fill out the info"):
         except Exception as e:
             print("Error updating completed row:", e)
 
-        await interaction.response.send_message("Got it — thanks for filling that out ✅", ephemeral=True)
+        await interaction.response.send_message(
+            "✅ Thanks! Your info was submitted.",
+            ephemeral=True
+        )
 
 
 class FormView(discord.ui.View):
-    def __init__(self, user_id: int, timeout=None):
+    """This view goes on ALL 3 DMs. We pass the actual discord.User so the modal can capture name + id."""
+    def __init__(self, user: discord.User, timeout=None):
         super().__init__(timeout=timeout)
-        self.user_id = user_id
+        self.user = user
 
     @discord.ui.button(label="Open form", style=discord.ButtonStyle.primary)
     async def open_form(self, interaction: discord.Interaction, button: discord.ui.Button):
-        modal = InfoForm(user_id=self.user_id)
+        modal = InfoForm(user_id=self.user.id, username=str(self.user))
         await interaction.response.send_modal(modal)
 
 
 # ------------------------------------------------
-# DM SENDING HELPERS
+# DM SENDERS (ALL USE THE VIEW)
 # ------------------------------------------------
-async def send_initial_dm(user: discord.User, user_id: int):
-    msg = get_message("initial_dm", "Hey! Please fill out this quick form.")
-    await user.send(msg, view=FormView(user_id=user_id))
+async def send_initial_dm(user: discord.User):
+    msg = get_message("initial_dm", "Hey! Please fill this out real quick:")
+    await user.send(msg, view=FormView(user))
 
 
-async def send_24h_dm(user: discord.User, user_id: int):
-    msg = get_message("followup_24h", "Just following up on that form I sent yesterday 👍")
-    await user.send(msg, view=FormView(user_id=user_id))
+async def send_24h_dm(user: discord.User):
+    msg = get_message("followup_24h", "Just following up on that form from yesterday 👍")
+    await user.send(msg, view=FormView(user))
 
 
-async def send_72h_dm(user: discord.User, user_id: int):
-    msg = get_message("followup_72h", "Last nudge on that form — would love to get it from you 🙏")
-    await user.send(msg, view=FormView(user_id=user_id))
+async def send_72h_dm(user: discord.User):
+    msg = get_message("followup_72h", "Last little nudge on that form 🙏")
+    await user.send(msg, view=FormView(user))
 
 
 # ------------------------------------------------
@@ -183,14 +206,14 @@ async def send_72h_dm(user: discord.User, user_id: int):
 async def on_ready():
     print(f"✅ Logged in as {bot.user} (ID: {bot.user.id})")
 
-    # Load messages initially
+    # load messages once at startup
     try:
         load_messages()
         print("✅ Loaded messages from sheet.")
     except Exception as e:
-        print("⚠️ Could not load messages:", e)
+        print("⚠️ Could not load messages on startup:", e)
 
-    # Sync commands
+    # sync slash commands
     try:
         if GUILD_ID:
             guild = discord.Object(id=GUILD_ID)
@@ -205,7 +228,7 @@ async def on_ready():
 
 
 # ------------------------------------------------
-# /BLAST COMMAND
+# /blast COMMAND
 # ------------------------------------------------
 @bot.tree.command(name="blast", description="DM all targets from the sheet")
 @app_commands.checks.has_permissions(administrator=True)
@@ -214,15 +237,20 @@ async def blast(interaction: discord.Interaction):
         await interaction.response.send_message("You can't run this.", ephemeral=True)
         return
 
-    await interaction.response.send_message("Sending DMs from sheet… (15 s delay per DM for safety)", ephemeral=True)
+    await interaction.response.send_message(
+        "Sending DMs from sheet… (15s delay per DM to stay safe)",
+        ephemeral=True
+    )
 
     targets, ws = load_targets()
-    count = 0
+    sent_count = 0
+
     for idx, row in enumerate(targets, start=2):
         user_id = str(row.get("user_id", "")).strip()
         status = str(row.get("status", "")).strip().lower()
         form_submitted = str(row.get("form_submitted", "")).strip().upper()
 
+        # skip if blank or already done
         if not user_id:
             continue
         if status in ("sent", "completed") or form_submitted == "TRUE":
@@ -230,29 +258,31 @@ async def blast(interaction: discord.Interaction):
 
         try:
             user = await bot.fetch_user(int(user_id))
-            await send_initial_dm(user, int(user_id))
+            await send_initial_dm(user)
             update_target_row(ws, idx, {
                 "status": "sent",
                 "sent_at": iso_now(),
                 "dm_error": "",
             })
-            count += 1
+            sent_count += 1
         except Exception as e:
             print(f"Error DMing {user_id}: {e}")
-            update_target_row(ws, idx, {"dm_error": str(e)})
+            update_target_row(ws, idx, {
+                "dm_error": str(e)
+            })
 
-        # ✅ Slow delay between each initial DM
+        # ✅ very safe spacing for initial sends
         await asyncio.sleep(15)
 
-    await interaction.followup.send(f"Done. Sent {count} DMs.", ephemeral=True)
+    await interaction.followup.send(f"Done. Sent {sent_count} DMs.", ephemeral=True)
 
 
 # ------------------------------------------------
-# FOLLOW-UP LOOP (24 H + 72 H)
+# FOLLOW-UP LOOP (24h + 72h)
 # ------------------------------------------------
 @tasks.loop(minutes=5)
 async def followup_checker():
-    # Refresh messages each run
+    # refresh messages in case you edited the sheet
     try:
         load_messages()
     except Exception as e:
@@ -261,7 +291,7 @@ async def followup_checker():
     try:
         targets, ws = load_targets()
     except Exception as e:
-        print("⚠️ Error loading targets:", e)
+        print("⚠️ Error loading targets in loop:", e)
         return
 
     now = datetime.datetime.utcnow()
@@ -275,7 +305,7 @@ async def followup_checker():
         completed_at = row.get("completed_at", "")
         form_submitted = str(row.get("form_submitted", "")).strip().upper()
 
-        # ✅ Cancel followups for completed / submitted users
+        # stop followups if user already submitted or is completed
         if not user_id:
             continue
         if status == "completed" or completed_at or form_submitted == "TRUE":
@@ -290,25 +320,29 @@ async def followup_checker():
 
         delta = now - sent_time
 
-        # 24 h follow-up
+        # 24h followup
         if delta >= datetime.timedelta(hours=24) and not reminder_sent:
             try:
                 user = await bot.fetch_user(int(user_id))
-                await send_24h_dm(user, int(user_id))
-                update_target_row(ws, idx, {"reminder_sent": iso_now()})
-                await asyncio.sleep(5)
+                await send_24h_dm(user)
+                update_target_row(ws, idx, {
+                    "reminder_sent": iso_now()
+                })
+                await asyncio.sleep(5)  # lighter delay for followups
             except Exception as e:
-                print(f"Error sending 24h follow-up to {user_id}: {e}")
+                print(f"Error sending 24h followup to {user_id}: {e}")
 
-        # 72 h follow-up
+        # 72h followup
         if delta >= datetime.timedelta(hours=72) and not second_reminder_sent:
             try:
                 user = await bot.fetch_user(int(user_id))
-                await send_72h_dm(user, int(user_id))
-                update_target_row(ws, idx, {"second_reminder_sent": iso_now()})
+                await send_72h_dm(user)
+                update_target_row(ws, idx, {
+                    "second_reminder_sent": iso_now()
+                })
                 await asyncio.sleep(5)
             except Exception as e:
-                print(f"Error sending 72h follow-up to {user_id}: {e}")
+                print(f"Error sending 72h followup to {user_id}: {e}")
 
 
 # ------------------------------------------------
