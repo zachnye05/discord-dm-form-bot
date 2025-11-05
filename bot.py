@@ -29,6 +29,16 @@ bot = commands.Bot(command_prefix="!", intents=INTENTS)
 # cache for external messages
 MESSAGE_CACHE = {}
 
+# embed color (hex) -> int
+EMBED_COLOR = 0x963BF3  # #963bf3
+
+# message to send after form is filled
+CLAIM_MESSAGE = (
+    "Thanks for submitting your info.\n\n"
+    "To claim your free week of Divine, click the link below👇\n\n"
+    "https://whop.com/checkout/plan_XiUlT3C057H67?d2c=true"
+)
+
 
 # ------------------------------------------------
 # GOOGLE SHEETS HELPERS
@@ -111,7 +121,7 @@ def append_response(user_id: int, username: str, payload: dict):
 # ------------------------------------------------
 # DISCORD UI: MODAL + BUTTON
 # ------------------------------------------------
-class InfoForm(discord.ui.Modal, title="Fill out your info"):
+class InfoForm(discord.ui.Modal, title="Claim your free week"):
     def __init__(self, user_id: int, username: str):
         super().__init__()
         self.user_id = user_id
@@ -163,40 +173,69 @@ class InfoForm(discord.ui.Modal, title="Fill out your info"):
         except Exception as e:
             print("Error updating completed row:", e)
 
+        # first reply in the modal
         await interaction.response.send_message(
-            "✅ Thanks! Your info was submitted.",
+            "✅ Thanks — your info was submitted.",
             ephemeral=True
         )
 
+        # then send the claim message right away
+        try:
+            await interaction.user.send(CLAIM_MESSAGE)
+        except Exception as e:
+            print("Error sending claim message to user:", e)
+
 
 class FormView(discord.ui.View):
-    """This view goes on ALL 3 DMs. We pass the actual discord.User so the modal can capture name + id."""
+    """
+    This view goes on ALL 3 DMs.
+    We pass the actual discord.User so the modal can capture name + id.
+    """
     def __init__(self, user: discord.User, timeout=None):
         super().__init__(timeout=timeout)
         self.user = user
 
-    @discord.ui.button(label="Open form", style=discord.ButtonStyle.primary)
+    @discord.ui.button(
+        label="Claim Your Free Week",
+        style=discord.ButtonStyle.primary  # Discord purple/blurple
+    )
     async def open_form(self, interaction: discord.Interaction, button: discord.ui.Button):
         modal = InfoForm(user_id=self.user.id, username=str(self.user))
         await interaction.response.send_modal(modal)
 
 
 # ------------------------------------------------
-# DM SENDERS (ALL USE THE VIEW)
+# DM SENDING HELPERS (embed + purple button)
 # ------------------------------------------------
+async def send_embed_dm(user: discord.User, message_key: str, fallback: str):
+    """Send an embed DM with our purple color and the claim button."""
+    text = get_message(message_key, fallback)
+    embed = discord.Embed(description=text, color=EMBED_COLOR)
+    await user.send(embed=embed, view=FormView(user))
+
+
 async def send_initial_dm(user: discord.User):
-    msg = get_message("initial_dm", "Hey! Please fill this out real quick:")
-    await user.send(msg, view=FormView(user))
+    await send_embed_dm(
+        user,
+        "initial_dm",
+        "Hey! Tap the button below to claim your free week."
+    )
 
 
 async def send_24h_dm(user: discord.User):
-    msg = get_message("followup_24h", "Just following up on that form from yesterday 👍")
-    await user.send(msg, view=FormView(user))
+    await send_embed_dm(
+        user,
+        "followup_24h",
+        "Just following up on that free week — tap below to claim."
+    )
 
 
 async def send_72h_dm(user: discord.User):
-    msg = get_message("followup_72h", "Last little nudge on that form 🙏")
-    await user.send(msg, view=FormView(user))
+    await send_embed_dm(
+        user,
+        "followup_72h",
+        "Final reminder to claim your free week — tap below."
+    )
 
 
 # ------------------------------------------------
