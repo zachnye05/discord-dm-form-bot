@@ -17,6 +17,7 @@ GUILD_ID = int(os.getenv("GUILD_ID", "0"))
 OWNER_ID = int(os.getenv("OWNER_ID", "0"))
 GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
 GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID")
+LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID", "0"))  # NEW
 
 # sheet/tab names
 TARGETS_WS_NAME = "targets"
@@ -38,6 +39,26 @@ CLAIM_MESSAGE = (
     "To claim your free week of Divine, click the link below👇\n\n"
     "https://whop.com/checkout/plan_XiUlT3C057H67?d2c=true"
 )
+
+
+# ------------------------------------------------
+# LOGGING HELPER
+# ------------------------------------------------
+async def log_to_channel(text: str):
+    """Send a log message to the Discord channel if LOG_CHANNEL_ID is set and the channel is reachable."""
+    if not LOG_CHANNEL_ID:
+        return
+    channel = bot.get_channel(LOG_CHANNEL_ID)
+    if channel is None:
+        # try fetching
+        try:
+            channel = await bot.fetch_channel(LOG_CHANNEL_ID)
+        except Exception:
+            return
+    try:
+        await channel.send(text[:2000])  # discord msg limit
+    except Exception:
+        pass
 
 
 # ------------------------------------------------
@@ -173,6 +194,11 @@ class InfoForm(discord.ui.Modal, title="Claim your free week"):
         except Exception as e:
             print("Error updating completed row:", e)
 
+        # log it
+        await log_to_channel(
+            f"✅ Form submitted by `{self.username}` (ID: {self.user_id})"
+        )
+
         # first reply in the modal
         await interaction.response.send_message(
             "✅ Thanks — your info was submitted.",
@@ -220,6 +246,7 @@ async def send_initial_dm(user: discord.User):
         "initial_dm",
         "Hey! Tap the button below to claim your free week."
     )
+    await log_to_channel(f"📤 Sent initial DM to `{user}` (ID: {user.id})")
 
 
 async def send_24h_dm(user: discord.User):
@@ -228,6 +255,7 @@ async def send_24h_dm(user: discord.User):
         "followup_24h",
         "Just following up on that free week — tap below to claim."
     )
+    await log_to_channel(f"🔁 Sent 24h follow-up to `{user}` (ID: {user.id})")
 
 
 async def send_72h_dm(user: discord.User):
@@ -236,6 +264,7 @@ async def send_72h_dm(user: discord.User):
         "followup_72h",
         "Final reminder to claim your free week — tap below."
     )
+    await log_to_channel(f"🔁 Sent 72h follow-up to `{user}` (ID: {user.id})")
 
 
 # ------------------------------------------------
@@ -263,6 +292,7 @@ async def on_ready():
     except Exception as e:
         print("⚠️ Error syncing commands:", e)
 
+    await log_to_channel("🟣 Divine DM bot is online.")
     followup_checker.start()
 
 
@@ -309,11 +339,13 @@ async def blast(interaction: discord.Interaction):
             update_target_row(ws, idx, {
                 "dm_error": str(e)
             })
+            await log_to_channel(f"⚠️ Failed to DM ID {user_id}: `{e}`")
 
         # ✅ very safe spacing for initial sends
         await asyncio.sleep(15)
 
     await interaction.followup.send(f"Done. Sent {sent_count} DMs.", ephemeral=True)
+    await log_to_channel(f"✅ /blast complete. Sent {sent_count} DMs.")
 
 
 # ------------------------------------------------
@@ -370,6 +402,7 @@ async def followup_checker():
                 await asyncio.sleep(5)  # lighter delay for followups
             except Exception as e:
                 print(f"Error sending 24h followup to {user_id}: {e}")
+                await log_to_channel(f"⚠️ Failed 24h follow-up to {user_id}: `{e}`")
 
         # 72h followup
         if delta >= datetime.timedelta(hours=72) and not second_reminder_sent:
@@ -382,6 +415,7 @@ async def followup_checker():
                 await asyncio.sleep(5)
             except Exception as e:
                 print(f"Error sending 72h followup to {user_id}: {e}")
+                await log_to_channel(f"⚠️ Failed 72h follow-up to {user_id}: `{e}`")
 
 
 # ------------------------------------------------
