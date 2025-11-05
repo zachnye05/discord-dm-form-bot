@@ -236,6 +236,12 @@ class FormView(discord.ui.View):
 async def send_embed_dm(user: discord.User, message_key: str, fallback: str):
     """Send an embed DM with our purple color and the claim button."""
     text = get_message(message_key, fallback)
+
+    # Replace <@user> with proper mention or username
+    text = text.replace("<@user>", user.mention)
+    text = text.replace("{user}", user.mention)
+    text = text.replace("{username}", user.name)
+
     embed = discord.Embed(description=text, color=EMBED_COLOR)
     await user.send(embed=embed, view=FormView(user))
 
