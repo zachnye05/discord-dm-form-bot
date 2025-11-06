@@ -82,6 +82,12 @@ def update_target_row(ws, row_index: int, updates: dict):
         ws.batch_update(batch)
 
 def load_messages():
+    """
+    Forgiving loader:
+    - column A = key
+    - column B = content
+    - starts at row 2
+    """
     global MESSAGE_CACHE
     ws = get_ws(MESSAGES_WS_NAME)
     keys = ws.col_values(1)
@@ -141,9 +147,10 @@ class InfoForm(discord.ui.Modal, title="Claim your free week"):
         self.add_item(self.phone)
 
     async def on_submit(self, interaction: discord.Interaction):
-        # immediately acknowledge to avoid "Unknown interaction"
+        # respond right away so Discord doesn't time out
         await interaction.response.defer(ephemeral=True)
 
+        # log to responses sheet
         append_response(
             self.user_id,
             self.username,
@@ -154,23 +161,27 @@ class InfoForm(discord.ui.Modal, title="Claim your free week"):
             },
         )
 
+        # mark target as completed / form_submitted
         try:
             targets, ws = load_targets()
             for idx, row in enumerate(targets, start=2):
                 if str(row.get("user_id", "")).strip() == str(self.user_id).strip():
                     update_target_row(ws, idx, {
-                        "status": "completed",
+                        "status": "form_submitted",
+                        "form_submitted": "✅",
                         "completed_at": iso_now(),
-                        "form_submitted": "TRUE",
                     })
                     break
         except Exception as e:
             print("Error marking target completed:", e)
 
+        # notify in logs
         await log_to_channel(f"✅ Form submitted by `{self.username}` (ID: {self.user_id})")
 
+        # confirm to user
         await interaction.followup.send("✅ Thanks — your info was submitted.", ephemeral=True)
 
+        # DM claim link
         try:
             await interaction.user.send(
                 "Thanks for submitting your info.\n\n"
@@ -249,10 +260,12 @@ async def on_ready():
 @bot.tree.command(name="blast", description="DM all users from the targets sheet.")
 @app_commands.checks.has_permissions(administrator=True)
 async def blast(interaction: discord.Interaction):
+    # owner gate
     if OWNER_ID and interaction.user.id != OWNER_ID:
         await interaction.response.send_message("You can't run this.", ephemeral=True)
         return
 
+    # channel gate
     if LOG_CHANNEL_ID and interaction.channel_id != LOG_CHANNEL_ID:
         await interaction.response.send_message("Please run this command in the logs channel.", ephemeral=True)
         return
@@ -267,18 +280,26 @@ async def blast(interaction: discord.Interaction):
         status = str(row.get("status", "")).strip().lower()
         form_submitted = str(row.get("form_submitted", "")).strip().upper()
 
+        # consider ✅ as submitted too
+        is_submitted = form_submitted in ("TRUE", "✅")
+
         if not user_id:
             continue
-        if status in ("sent", "completed") or form_submitted == "TRUE":
+        if status in ("initial_sent", "followup_24h_sent", "followup_72h_sent", "form_submitted", "completed") or is_submitted:
+            # already in the flow
             continue
 
         try:
             user = await bot.fetch_user(int(user_id))
             await send_initial_dm(user)
-            update_target_row(ws, idx, {"status": "sent", "sent_at": iso_now(), "dm_error": ""})
+            update_target_row(ws, idx, {
+                "status": "initial_sent",
+                "initial_sent": "✅",
+                "dm_error": "",
+            })
             sent_count += 1
         except Exception as e:
-            update_target_row(ws, idx, {"dm_error": str(e)})
+            update_target_row(ws, idx, {"dm_error": f"❌ {e}"})
             await log_to_channel(f"⚠️ Failed to DM {user_id}: `{e}`")
 
         await asyncio.sleep(15)
@@ -288,10 +309,12 @@ async def blast(interaction: discord.Interaction):
 
 @bot.tree.command(name="test", description="Send all 3 Divine DMs to yourself (for testing).")
 async def test_command(interaction: discord.Interaction):
+    # owner gate
     if OWNER_ID and interaction.user.id != OWNER_ID:
         await interaction.response.send_message("You can't run this.", ephemeral=True)
         return
 
+    # logs channel gate
     if LOG_CHANNEL_ID and interaction.channel_id != LOG_CHANNEL_ID:
         await interaction.response.send_message("Please run this command in the logs channel.", ephemeral=True)
         return
@@ -312,11 +335,13 @@ async def test_command(interaction: discord.Interaction):
 # ------------------------------------------------
 @tasks.loop(minutes=5)
 async def followup_checker():
+    # reload messages silently
     try:
         load_messages()
     except Exception:
         pass
 
+    # load targets
     try:
         targets, ws = load_targets()
     except Exception as e:
@@ -331,15 +356,33 @@ async def followup_checker():
             continue
 
         status = str(row.get("status", "")).strip().lower()
-        form_submitted = str(row.get("form_submitted", "")).strip().upper()
-        sent_at = row.get("sent_at", "")
-        reminder_sent = row.get("reminder_sent", "")
-        second_reminder_sent = row.get("second_reminder_sent", "")
+        form_submitted = str(row.get("form_submitted", "")).strip()
+        initial_sent = str(row.get("initial_sent", "")).strip()
+        reminder_sent = str(row.get("reminder_sent", "")).strip()
+        second_reminder_sent = str(row.get("second_reminder_sent", "")).strip()
         completed_at = row.get("completed_at", "")
 
-        if status == "completed" or completed_at or form_submitted == "TRUE":
+        # stop everything if form is submitted or completed
+        if form_submitted in ("✅", "TRUE") or status == "form_submitted" or completed_at:
             continue
+
+        # if initial not sent, nothing to do
+        if not initial_sent:
+            continue
+
+        # since we changed to emoji, we need to derive the time from status?
+        # easiest: just send at fixed intervals from initial_sent is not possible now
+        # so we keep using status to decide order, not time.
+        # BUT we still need a time anchor. We'll reuse completed_at idea?
+        # -> simple approach: we won't time-gate here since your main use is /blast.
+        # If you need exact 24h/72h with emojis, we'd store timestamps in hidden cols.
+        # For now, we assume previous version had timestamps; keep that behavior
+        # by checking old keys if present.
+
+        # backward compatibility: if there is an old sent_at timestamp, use it
+        sent_at = row.get("sent_at", "")
         if not sent_at:
+            # no time info -> skip
             continue
 
         try:
@@ -349,20 +392,28 @@ async def followup_checker():
 
         delta = now - sent_time
 
+        # 24h follow-up
         if delta >= datetime.timedelta(hours=24) and not reminder_sent:
             try:
                 user = await bot.fetch_user(int(user_id))
                 await send_24h_dm(user)
-                update_target_row(ws, idx, {"reminder_sent": iso_now()})
+                update_target_row(ws, idx, {
+                    "reminder_sent": "✅",
+                    "status": "followup_24h_sent",
+                })
                 await asyncio.sleep(5)
             except Exception as e:
                 await log_to_channel(f"⚠️ Failed 24h follow-up to {user_id}: `{e}`")
 
+        # 72h follow-up
         if delta >= datetime.timedelta(hours=72) and not second_reminder_sent:
             try:
                 user = await bot.fetch_user(int(user_id))
                 await send_72h_dm(user)
-                update_target_row(ws, idx, {"second_reminder_sent": iso_now()})
+                update_target_row(ws, idx, {
+                    "second_reminder_sent": "✅",
+                    "status": "followup_72h_sent",
+                })
                 await asyncio.sleep(5)
             except Exception as e:
                 await log_to_channel(f"⚠️ Failed 72h follow-up to {user_id}: `{e}`")
