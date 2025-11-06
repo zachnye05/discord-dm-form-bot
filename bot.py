@@ -34,12 +34,10 @@ MESSAGE_CACHE = {}
 intents = discord.Intents.default()
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-
 # ------------------------------------------------
 # HELPERS
 # ------------------------------------------------
 async def log_to_channel(text: str):
-    """Send text to the logs channel if configured."""
     if not LOG_CHANNEL_ID:
         return
     try:
@@ -49,14 +47,11 @@ async def log_to_channel(text: str):
     except Exception:
         pass
 
-
 def iso_now() -> str:
     return datetime.datetime.utcnow().isoformat()
 
-
 def parse_iso(s: str) -> datetime.datetime:
     return datetime.datetime.fromisoformat(s)
-
 
 # ------------------------------------------------
 # GOOGLE SHEETS
@@ -65,18 +60,15 @@ def get_client():
     sa_info = json.loads(GOOGLE_SERVICE_ACCOUNT_JSON)
     return gspread.service_account_from_dict(sa_info)
 
-
 def get_ws(name: str):
     gc = get_client()
     sh = gc.open_by_key(GOOGLE_SHEET_ID)
     return sh.worksheet(name)
 
-
 def load_targets():
     ws = get_ws(TARGETS_WS_NAME)
     records = ws.get_all_records()
     return records, ws
-
 
 def update_target_row(ws, row_index: int, updates: dict):
     headers = ws.row_values(1)
@@ -89,20 +81,13 @@ def update_target_row(ws, row_index: int, updates: dict):
     if batch:
         ws.batch_update(batch)
 
-
 def load_messages():
-    """
-    Forgiving loader:
-    - column A = key
-    - column B = content
-    - starts at row 2
-    """
     global MESSAGE_CACHE
     ws = get_ws(MESSAGES_WS_NAME)
     keys = ws.col_values(1)
     contents = ws.col_values(2)
     cache = {}
-    for i in range(1, len(keys)):  # skip header row
+    for i in range(1, len(keys)):  # skip header
         k = (keys[i] or "").strip()
         if not k:
             continue
@@ -112,9 +97,7 @@ def load_messages():
     MESSAGE_CACHE = cache
     return cache
 
-
 def append_response(user_id: int, username: str, payload: dict):
-    """Log a submission to responses sheet (if it exists)."""
     try:
         ws = get_ws(RESPONSES_WS_NAME)
     except Exception:
@@ -127,7 +110,6 @@ def append_response(user_id: int, username: str, payload: dict):
         payload.get("email", ""),
         payload.get("phone", ""),
     ])
-
 
 # ------------------------------------------------
 # DISCORD UI (MODAL + BUTTON)
@@ -159,7 +141,9 @@ class InfoForm(discord.ui.Modal, title="Claim your free week"):
         self.add_item(self.phone)
 
     async def on_submit(self, interaction: discord.Interaction):
-        # 1) log to responses sheet
+        # immediately acknowledge to avoid "Unknown interaction"
+        await interaction.response.defer(ephemeral=True)
+
         append_response(
             self.user_id,
             self.username,
@@ -170,7 +154,6 @@ class InfoForm(discord.ui.Modal, title="Claim your free week"):
             },
         )
 
-        # 2) mark target as completed if they're in targets
         try:
             targets, ws = load_targets()
             for idx, row in enumerate(targets, start=2):
@@ -184,11 +167,10 @@ class InfoForm(discord.ui.Modal, title="Claim your free week"):
         except Exception as e:
             print("Error marking target completed:", e)
 
-        # 3) notify logs
         await log_to_channel(f"✅ Form submitted by `{self.username}` (ID: {self.user_id})")
 
-        # 4) reply + send claim link
-        await interaction.response.send_message("✅ Thanks — your info was submitted.", ephemeral=True)
+        await interaction.followup.send("✅ Thanks — your info was submitted.", ephemeral=True)
+
         try:
             await interaction.user.send(
                 "Thanks for submitting your info.\n\n"
@@ -197,7 +179,6 @@ class InfoForm(discord.ui.Modal, title="Claim your free week"):
             )
         except Exception as e:
             print("Error sending claim DM:", e)
-
 
 class FormView(discord.ui.View):
     def __init__(self, user: discord.User, timeout=None):
@@ -212,13 +193,11 @@ class FormView(discord.ui.View):
         modal = InfoForm(user_id=self.user.id, username=str(self.user))
         await interaction.response.send_modal(modal)
 
-
 # ------------------------------------------------
 # DM HELPERS
 # ------------------------------------------------
 def get_message(key: str, default: str = "") -> str:
     return MESSAGE_CACHE.get(key, default)
-
 
 async def send_embed_dm(user: discord.User, message_key: str, fallback: str):
     text = get_message(message_key, fallback)
@@ -228,37 +207,20 @@ async def send_embed_dm(user: discord.User, message_key: str, fallback: str):
             .replace("{username}", user.name)
     )
     embed = discord.Embed(description=text, color=EMBED_COLOR)
-    # add banner
     embed.set_image(url=BANNER_URL)
     await user.send(embed=embed, view=FormView(user))
 
-
 async def send_initial_dm(user: discord.User):
-    await send_embed_dm(
-        user,
-        "initial_dm",
-        "Hey! Tap the button below to claim your free week."
-    )
+    await send_embed_dm(user, "initial_dm", "Hey! Tap the button below to claim your free week.")
     await log_to_channel(f"📤 Sent initial DM to {user} (ID: {user.id})")
 
-
 async def send_24h_dm(user: discord.User):
-    await send_embed_dm(
-        user,
-        "followup_24h",
-        "Just following up — tap below to claim."
-    )
+    await send_embed_dm(user, "followup_24h", "Just following up — tap below to claim.")
     await log_to_channel(f"🔁 Sent 24h follow-up to {user} (ID: {user.id})")
 
-
 async def send_72h_dm(user: discord.User):
-    await send_embed_dm(
-        user,
-        "followup_72h",
-        "**IMPORTANT NOTICE** — last chance to claim."
-    )
+    await send_embed_dm(user, "followup_72h", "**IMPORTANT NOTICE** — last chance to claim.")
     await log_to_channel(f"🔁 Sent 72h follow-up to {user} (ID: {user.id})")
-
 
 # ------------------------------------------------
 # EVENTS
@@ -267,14 +229,12 @@ async def send_72h_dm(user: discord.User):
 async def on_ready():
     print(f"✅ Logged in as {bot.user} (ID: {bot.user.id})")
 
-    # load messages from sheet (forgiving)
     try:
         loaded = load_messages()
         await log_to_channel(f"🗂 Loaded message keys: {list(loaded.keys())}")
     except Exception as e:
         await log_to_channel(f"⚠️ Could not load messages on startup: `{repr(e)}`")
 
-    # make sure commands exist in both servers
     try:
         await bot.tree.sync()
     except Exception as e:
@@ -283,30 +243,21 @@ async def on_ready():
     await log_to_channel("🟣 Divine DM bot is online.")
     followup_checker.start()
 
-
 # ------------------------------------------------
 # COMMANDS
 # ------------------------------------------------
 @bot.tree.command(name="blast", description="DM all users from the targets sheet.")
 @app_commands.checks.has_permissions(administrator=True)
 async def blast(interaction: discord.Interaction):
-    # owner gate
     if OWNER_ID and interaction.user.id != OWNER_ID:
         await interaction.response.send_message("You can't run this.", ephemeral=True)
         return
 
-    # channel gate
     if LOG_CHANNEL_ID and interaction.channel_id != LOG_CHANNEL_ID:
-        await interaction.response.send_message(
-            "Please run this command in the logs channel.",
-            ephemeral=True
-        )
+        await interaction.response.send_message("Please run this command in the logs channel.", ephemeral=True)
         return
 
-    await interaction.response.send_message(
-        "Sending DMs (15s delay per user to stay safe)…",
-        ephemeral=True
-    )
+    await interaction.response.send_message("Sending DMs (15s delay per user)…", ephemeral=True)
 
     targets, ws = load_targets()
     sent_count = 0
@@ -316,7 +267,6 @@ async def blast(interaction: discord.Interaction):
         status = str(row.get("status", "")).strip().lower()
         form_submitted = str(row.get("form_submitted", "")).strip().upper()
 
-        # skip blanks / already done
         if not user_id:
             continue
         if status in ("sent", "completed") or form_submitted == "TRUE":
@@ -325,36 +275,25 @@ async def blast(interaction: discord.Interaction):
         try:
             user = await bot.fetch_user(int(user_id))
             await send_initial_dm(user)
-            update_target_row(ws, idx, {
-                "status": "sent",
-                "sent_at": iso_now(),
-                "dm_error": "",
-            })
+            update_target_row(ws, idx, {"status": "sent", "sent_at": iso_now(), "dm_error": ""})
             sent_count += 1
         except Exception as e:
             update_target_row(ws, idx, {"dm_error": str(e)})
             await log_to_channel(f"⚠️ Failed to DM {user_id}: `{e}`")
 
-        # VERY safe spacing
         await asyncio.sleep(15)
 
-    await interaction.followup.send(f"Done. Sent {sent_count} DMs.", ephemeral=True)
+    await interaction.followup.send(f"✅ Done. Sent {sent_count} DMs.", ephemeral=True)
     await log_to_channel(f"✅ /blast complete. Sent {sent_count} DMs.")
-
 
 @bot.tree.command(name="test", description="Send all 3 Divine DMs to yourself (for testing).")
 async def test_command(interaction: discord.Interaction):
-    # owner gate
     if OWNER_ID and interaction.user.id != OWNER_ID:
         await interaction.response.send_message("You can't run this.", ephemeral=True)
         return
 
-    # logs-channel only
     if LOG_CHANNEL_ID and interaction.channel_id != LOG_CHANNEL_ID:
-        await interaction.response.send_message(
-            "Please run this command in the logs channel.",
-            ephemeral=True
-        )
+        await interaction.response.send_message("Please run this command in the logs channel.", ephemeral=True)
         return
 
     await interaction.response.send_message("Sending test DMs to you…", ephemeral=True)
@@ -368,19 +307,16 @@ async def test_command(interaction: discord.Interaction):
 
     await log_to_channel(f"🧪 Sent test DMs to {user} (ID: {user.id})")
 
-
 # ------------------------------------------------
 # FOLLOWUP LOOP
 # ------------------------------------------------
 @tasks.loop(minutes=5)
 async def followup_checker():
-    # refresh messages in case you edited the sheet
     try:
         load_messages()
     except Exception:
         pass
 
-    # load targets
     try:
         targets, ws = load_targets()
     except Exception as e:
@@ -401,7 +337,6 @@ async def followup_checker():
         second_reminder_sent = row.get("second_reminder_sent", "")
         completed_at = row.get("completed_at", "")
 
-        # cancel followups once completed
         if status == "completed" or completed_at or form_submitted == "TRUE":
             continue
         if not sent_at:
@@ -414,7 +349,6 @@ async def followup_checker():
 
         delta = now - sent_time
 
-        # 24h follow-up
         if delta >= datetime.timedelta(hours=24) and not reminder_sent:
             try:
                 user = await bot.fetch_user(int(user_id))
@@ -424,7 +358,6 @@ async def followup_checker():
             except Exception as e:
                 await log_to_channel(f"⚠️ Failed 24h follow-up to {user_id}: `{e}`")
 
-        # 72h follow-up
         if delta >= datetime.timedelta(hours=72) and not second_reminder_sent:
             try:
                 user = await bot.fetch_user(int(user_id))
@@ -433,7 +366,6 @@ async def followup_checker():
                 await asyncio.sleep(5)
             except Exception as e:
                 await log_to_channel(f"⚠️ Failed 72h follow-up to {user_id}: `{e}`")
-
 
 # ------------------------------------------------
 # RUN
