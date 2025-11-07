@@ -16,12 +16,12 @@ LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID", "0"))
 GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
 GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID")
 
-# sheet names
+# Sheet names
 TARGETS_WS_NAME = "targets"
 MESSAGES_WS_NAME = "messages"
 RESPONSES_WS_NAME = "responses"
 
-# embed look
+# Embed look
 EMBED_COLOR = 0x963BF3
 BANNER_URL = (
     "https://cdn.discordapp.com/attachments/1436108078612484189/1436115777265598555/"
@@ -110,7 +110,7 @@ def append_response(user_id: int, username: str, payload: dict):
     ])
 
 # ------------------------------------------------
-# DISCORD UI (MODAL + BUTTON)
+# DISCORD UI
 # ------------------------------------------------
 class InfoForm(discord.ui.Modal, title="Claim your free week"):
     def __init__(self, user_id: int, username: str):
@@ -118,21 +118,9 @@ class InfoForm(discord.ui.Modal, title="Claim your free week"):
         self.user_id = user_id
         self.username = username
 
-        self.first_name = discord.ui.TextInput(
-            label="First name",
-            required=True,
-            placeholder="Casey"
-        )
-        self.email = discord.ui.TextInput(
-            label="Email",
-            required=True,
-            placeholder="casey@divineresell.com"
-        )
-        self.phone = discord.ui.TextInput(
-            label="Phone number",
-            required=True,
-            placeholder="(987) 654-3210"
-        )
+        self.first_name = discord.ui.TextInput(label="First name", required=True, placeholder="Casey")
+        self.email = discord.ui.TextInput(label="Email", required=True, placeholder="casey@divineresell.com")
+        self.phone = discord.ui.TextInput(label="Phone number", required=True, placeholder="(987) 654-3210")
 
         self.add_item(self.first_name)
         self.add_item(self.email)
@@ -144,11 +132,7 @@ class InfoForm(discord.ui.Modal, title="Claim your free week"):
         append_response(
             self.user_id,
             self.username,
-            {
-                "first_name": str(self.first_name),
-                "email": str(self.email),
-                "phone": str(self.phone),
-            },
+            {"first_name": str(self.first_name), "email": str(self.email), "phone": str(self.phone)},
         )
 
         try:
@@ -167,7 +151,6 @@ class InfoForm(discord.ui.Modal, title="Claim your free week"):
         await log_to_channel(f"✅ Form submitted by `{self.username}` (ID: {self.user_id})")
 
         await interaction.followup.send("✅ Thanks — your info was submitted.", ephemeral=True)
-
         try:
             await interaction.user.send(
                 "Thanks for submitting your info.\n\n"
@@ -182,10 +165,7 @@ class FormView(discord.ui.View):
         super().__init__(timeout=timeout)
         self.user = user
 
-    @discord.ui.button(
-        label="Claim Your Free Week",
-        style=discord.ButtonStyle.primary
-    )
+    @discord.ui.button(label="Claim Your Free Week", style=discord.ButtonStyle.primary)
     async def open_form(self, interaction: discord.Interaction, button: discord.ui.Button):
         modal = InfoForm(user_id=self.user.id, username=str(self.user))
         await interaction.response.send_modal(modal)
@@ -232,11 +212,7 @@ async def on_ready():
     except Exception as e:
         await log_to_channel(f"⚠️ Could not load messages on startup: `{repr(e)}`")
 
-    try:
-        await bot.tree.sync()
-    except Exception as e:
-        print("Error syncing commands:", e)
-
+    await bot.tree.sync()
     await log_to_channel("🟣 Divine DM bot is online.")
     followup_checker.start()
 
@@ -253,7 +229,7 @@ async def blast(interaction: discord.Interaction):
         await interaction.response.send_message("Please run this command in the logs channel.", ephemeral=True)
         return
 
-    await interaction.response.send_message("Sending DMs (15s delay per user)…", ephemeral=True)
+    await interaction.response.send_message("Sending DMs (15s delay per successful DM)…", ephemeral=True)
 
     targets, ws = load_targets()
     sent_count = 0
@@ -263,22 +239,15 @@ async def blast(interaction: discord.Interaction):
         status = str(row.get("status", "")).strip().lower()
         form_submitted = str(row.get("form_submitted", "")).strip().upper()
 
-        is_submitted = form_submitted in ("TRUE", "✅")
-
-        if not user_id:
+        if not user_id or form_submitted in ("TRUE", "✅"):
             continue
-        if status in (
-            "initial_sent",
-            "followup_24h_sent",
-            "followup_72h_sent",
-            "form_submitted",
-            "completed",
-        ) or is_submitted:
+        if status in ("initial_sent", "followup_24h_sent", "followup_72h_sent", "form_submitted", "completed"):
             continue
 
         try:
             user = await bot.fetch_user(int(user_id))
             await send_initial_dm(user)
+
             update_target_row(ws, idx, {
                 "status": "initial_sent",
                 "initial_sent": "✅",
@@ -286,11 +255,14 @@ async def blast(interaction: discord.Interaction):
                 "sent_at": iso_now(),
             })
             sent_count += 1
+
+            # Only delay if DM succeeded
+            await asyncio.sleep(15)
+
         except Exception as e:
             update_target_row(ws, idx, {"dm_error": f"❌ {e}"})
             await log_to_channel(f"⚠️ Failed to DM {user_id}: `{e}`")
-
-        await asyncio.sleep(15)
+            # no delay here
 
     await interaction.followup.send(f"✅ Done. Sent {sent_count} DMs.", ephemeral=True)
     await log_to_channel(f"✅ /blast complete. Sent {sent_count} DMs.")
@@ -300,20 +272,17 @@ async def test_command(interaction: discord.Interaction):
     if OWNER_ID and interaction.user.id != OWNER_ID:
         await interaction.response.send_message("You can't run this.", ephemeral=True)
         return
-
     if LOG_CHANNEL_ID and interaction.channel_id != LOG_CHANNEL_ID:
         await interaction.response.send_message("Please run this command in the logs channel.", ephemeral=True)
         return
 
     await interaction.response.send_message("Sending test DMs to you…", ephemeral=True)
-
     user = interaction.user
     await send_initial_dm(user)
     await asyncio.sleep(1)
     await send_24h_dm(user)
     await asyncio.sleep(1)
     await send_72h_dm(user)
-
     await log_to_channel(f"🧪 Sent test DMs to {user} (ID: {user.id})")
 
 # ------------------------------------------------
@@ -329,7 +298,7 @@ async def followup_checker():
     try:
         targets, ws = load_targets()
     except Exception as e:
-        print("Error loading targets in loop:", e)
+        print("Error loading targets:", e)
         return
 
     now = datetime.datetime.utcnow()
@@ -343,21 +312,16 @@ async def followup_checker():
         form_submitted = str(row.get("form_submitted", "")).strip()
         initial_sent = str(row.get("initial_sent", "")).strip()
         reminder_sent = str(row.get("reminder_sent", "")).strip()
-        second_reminder_sent = str(row.get("second_reminder_sent", "")).strip()
-        completed_at = row.get("completed_at", "")
+        second_sent = str(row.get("second_reminder_sent", "")).strip()
+        completed = row.get("completed_at", "")
 
-        if form_submitted in ("✅", "TRUE") or status == "form_submitted" or completed_at:
+        if form_submitted in ("✅", "TRUE") or status == "form_submitted" or completed:
             continue
-
-        if not initial_sent:
-            continue
-
-        sent_at = row.get("sent_at", "")
-        if not sent_at:
+        if not initial_sent or not row.get("sent_at", ""):
             continue
 
         try:
-            sent_time = parse_iso(sent_at)
+            sent_time = parse_iso(row["sent_at"])
         except Exception:
             continue
 
@@ -367,25 +331,19 @@ async def followup_checker():
             try:
                 user = await bot.fetch_user(int(user_id))
                 await send_24h_dm(user)
-                update_target_row(ws, idx, {
-                    "reminder_sent": "✅",
-                    "status": "followup_24h_sent",
-                })
+                update_target_row(ws, idx, {"reminder_sent": "✅", "status": "followup_24h_sent"})
                 await asyncio.sleep(5)
             except Exception as e:
-                await log_to_channel(f"⚠️ Failed 24h follow-up to {user_id}: `{e}`")
+                await log_to_channel(f"⚠️ Failed 24h DM to {user_id}: {e}")
 
-        if delta >= datetime.timedelta(hours=72) and not second_reminder_sent:
+        if delta >= datetime.timedelta(hours=72) and not second_sent:
             try:
                 user = await bot.fetch_user(int(user_id))
                 await send_72h_dm(user)
-                update_target_row(ws, idx, {
-                    "second_reminder_sent": "✅",
-                    "status": "followup_72h_sent",
-                })
+                update_target_row(ws, idx, {"second_reminder_sent": "✅", "status": "followup_72h_sent"})
                 await asyncio.sleep(5)
             except Exception as e:
-                await log_to_channel(f"⚠️ Failed 72h follow-up to {user_id}: `{e}`")
+                await log_to_channel(f"⚠️ Failed 72h DM to {user_id}: {e}")
 
 # ------------------------------------------------
 # RUN
