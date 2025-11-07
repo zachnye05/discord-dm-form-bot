@@ -1,4 +1,3 @@
-# bot.py
 import os
 import json
 import asyncio
@@ -59,8 +58,8 @@ COL_DM_ERROR = "dm_error"
 # DISCORD SETUP
 # ─────────────────────────────
 intents = discord.Intents.default()
-intents.message_content = True  # ok to turn on
-# we are NOT forcing members intent so the bot won’t crash if you didn’t enable it
+# keep this ON only if you enabled it in the Discord developer portal
+intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 
@@ -93,6 +92,9 @@ async def fetch_targets_if_needed(force: bool = False):
     except gspread.exceptions.APIError as e:
         print(f"[sheets] targets fetch hit quota: {e}")
         return TARGETS_CACHE
+    except Exception as e:
+        print(f"[sheets] targets fetch error: {e}")
+        return TARGETS_CACHE
 
 
 async def fetch_messages_if_needed(force: bool = False):
@@ -105,18 +107,24 @@ async def fetch_messages_if_needed(force: bool = False):
     try:
         sh = get_sheet_client()
         ws = sh.worksheet(MESSAGES_WS_NAME)
-        rows = ws.get_all_records()
+        # 👇 THIS is the change: tell gspread exactly what the headers are
+        rows = ws.get_all_records(expected_headers=["key", "content"])
+
         msg_map = {}
         for r in rows:
             key = r.get("key")
             content = r.get("content", "")
             if key:
                 msg_map[key] = content
+
         MESSAGES_CACHE = msg_map
         LAST_MESSAGES_FETCH = now
         return MESSAGES_CACHE
     except gspread.exceptions.APIError as e:
         print(f"[sheets] messages fetch hit quota: {e}")
+        return MESSAGES_CACHE
+    except Exception as e:
+        print(f"[sheets] messages fetch error: {e}")
         return MESSAGES_CACHE
 
 
