@@ -2,7 +2,6 @@ import os
 import json
 import asyncio
 import datetime
-import random
 
 import discord
 from discord import app_commands
@@ -21,6 +20,25 @@ TARGETS_WS_NAME = "targets"
 MESSAGES_WS_NAME = "messages"
 RESPONSES_WS_NAME = "responses"
 
+# targets sheet column indexes (1-based) – MATCHES YOUR SHEET
+TARGET_COL_USER_ID = 1          # A
+TARGET_COL_STATUS = 2           # B
+TARGET_COL_INITIAL_SENT = 3     # C
+TARGET_COL_REMINDER_SENT = 4    # D
+TARGET_COL_SECOND_REMINDER_SENT = 5  # E
+TARGET_COL_COMPLETED_AT = 6     # F
+TARGET_COL_FORM_SUBMITTED = 7   # G
+TARGET_COL_DM_ERROR = 8         # H
+
+# keys we expect when we read targets as dicts
+COL_USER_ID = "user_id"
+COL_INITIAL_SENT = "initial_sent"
+COL_REMINDER_SENT = "reminder_sent"
+COL_SECOND_REMINDER_SENT = "second_reminder_sent"
+COL_COMPLETED_AT = "completed_at"
+COL_FORM_SUBMITTED = "form_submitted"
+COL_DM_ERROR = "dm_error"
+
 # guild/role gate
 TARGET_GUILD_ID = 667532381376217089
 EXCLUDED_ROLE_IDS = {
@@ -33,33 +51,23 @@ EMBED_COLOR = 0x963BF3
 BANNER_URL = "https://cdn.discordapp.com/attachments/1436108078612484189/1436115777265598555/image.png"
 BUTTON_LABEL = "Claim Your Free Week"
 
-# DM pacing
-INITIAL_DM_DELAY_SECONDS = 15  # only on success
+# pacing
+INITIAL_DM_DELAY_SECONDS = 15
 FOLLOWUP_DM_DELAY_SECONDS = 5
 
-# sheets caching (fix 429s)
+# caching
 TARGETS_CACHE = []
 MESSAGES_CACHE = {}
 LAST_TARGETS_FETCH = 0.0
 LAST_MESSAGES_FETCH = 0.0
-TARGETS_REFRESH_SECONDS = 600  # 10 minutes
+TARGETS_REFRESH_SECONDS = 600
 MESSAGES_REFRESH_SECONDS = 600
-
-# sheet column names we expect
-COL_USER_ID = "user_id"
-COL_INITIAL_SENT = "initial_sent"
-COL_REMINDER_SENT = "reminder_sent"
-COL_SECOND_REMINDER_SENT = "second_reminder_sent"
-COL_COMPLETED_AT = "completed_at"
-COL_FORM_SUBMITTED = "form_submitted"
-COL_DM_ERROR = "dm_error"
 
 # ─────────────────────────────
 # DISCORD SETUP
 # ─────────────────────────────
 intents = discord.Intents.default()
-# keep this ON only if you enabled it in the Discord developer portal
-intents.message_content = True
+intents.message_content = True  # only works if enabled in Discord portal
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 
@@ -67,7 +75,6 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 # GOOGLE SHEETS HELPERS
 # ─────────────────────────────
 def get_sheet_client():
-    # Railway: GOOGLE_SERVICE_ACCOUNT_JSON is a JSON string of the service account
     service_json = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
     info = json.loads(service_json)
     gc = gspread.service_account_from_dict(info)
@@ -75,61 +82,7 @@ def get_sheet_client():
     return sh
 
 
-async def fetch_targets_if_needed(force: bool = False):
-    """Read the targets sheet, but not more than every TARGETS_REFRESH_SECONDS."""
-    global TARGETS_CACHE, LAST_TARGETS_FETCH
-    now = asyncio.get_event_loop().time()
-    if not force and (now - LAST_TARGETS_FETCH) < TARGETS_REFRESH_SECONDS and TARGETS_CACHE:
-        return TARGETS_CACHE
-
-    try:
-        sh = get_sheet_client()
-        ws = sh.worksheet(TARGETS_WS_NAME)
-        rows = ws.get_all_records()
-        TARGETS_CACHE = rows
-        LAST_TARGETS_FETCH = now
-        return TARGETS_CACHE
-    except gspread.exceptions.APIError as e:
-        print(f"[sheets] targets fetch hit quota: {e}")
-        return TARGETS_CACHE
-    except Exception as e:
-        print(f"[sheets] targets fetch error: {e}")
-        return TARGETS_CACHE
-
-
-async def fetch_messages_if_needed(force: bool = False):
-    """Load messages sheet into a dict: key -> content."""
-    global MESSAGES_CACHE, LAST_MESSAGES_FETCH
-    now = asyncio.get_event_loop().time()
-    if not force and (now - LAST_MESSAGES_FETCH) < MESSAGES_REFRESH_SECONDS and MESSAGES_CACHE:
-        return MESSAGES_CACHE
-
-    try:
-        sh = get_sheet_client()
-        ws = sh.worksheet(MESSAGES_WS_NAME)
-        # 👇 THIS is the change: tell gspread exactly what the headers are
-        rows = ws.get_all_records(expected_headers=["key", "content"])
-
-        msg_map = {}
-        for r in rows:
-            key = r.get("key")
-            content = r.get("content", "")
-            if key:
-                msg_map[key] = content
-
-        MESSAGES_CACHE = msg_map
-        LAST_MESSAGES_FETCH = now
-        return MESSAGES_CACHE
-    except gspread.exceptions.APIError as e:
-        print(f"[sheets] messages fetch hit quota: {e}")
-        return MESSAGES_CACHE
-    except Exception as e:
-        print(f"[sheets] messages fetch error: {e}")
-        return MESSAGES_CACHE
-
-
 def sheet_update_cell(row_index: int, col_index: int, value: str):
-    """Small helper to write to sheets without re-reading everything."""
     try:
         sh = get_sheet_client()
         ws = sh.worksheet(TARGETS_WS_NAME)
@@ -148,8 +101,55 @@ def sheet_append_response(discord_id: str, username: str, first: str, email: str
         print(f"[sheets] append response error: {e}")
 
 
+async def fetch_targets_if_needed(force: bool = False):
+    global TARGETS_CACHE, LAST_TARGETS_FETCH
+    now = asyncio.get_event_loop().time()
+    if not force and (now - LAST_TARGETS_FETCH) < TARGETS_REFRESH_SECONDS and TARGETS_CACHE:
+        return TARGETS_CACHE
+
+    try:
+        sh = get_sheet_client()
+        ws = sh.worksheet(TARGETS_WS_NAME)
+        rows = ws.get_all_records()
+        TARGETS_CACHE = rows
+        LAST_TARGETS_FETCH = now
+        return TARGETS_CACHE
+    except Exception as e:
+        print(f"[sheets] targets fetch error: {e}")
+        return TARGETS_CACHE
+
+
+async def fetch_messages_if_needed(force: bool = False):
+    """
+    messages sheet:
+    row 1: key | content
+    we force expected_headers so gspread stops complaining about non-unique headers
+    """
+    global MESSAGES_CACHE, LAST_MESSAGES_FETCH
+    now = asyncio.get_event_loop().time()
+    if not force and (now - LAST_MESSAGES_FETCH) < MESSAGES_REFRESH_SECONDS and MESSAGES_CACHE:
+        return MESSAGES_CACHE
+
+    try:
+        sh = get_sheet_client()
+        ws = sh.worksheet(MESSAGES_WS_NAME)
+        rows = ws.get_all_records(expected_headers=["key", "content"])
+        msg_map = {}
+        for r in rows:
+            k = r.get("key")
+            v = r.get("content", "")
+            if k:
+                msg_map[k] = v
+        MESSAGES_CACHE = msg_map
+        LAST_MESSAGES_FETCH = now
+        return MESSAGES_CACHE
+    except Exception as e:
+        print(f"[sheets] messages fetch error: {e}")
+        return MESSAGES_CACHE
+
+
 # ─────────────────────────────
-# DISCORD UI (BUTTON + MODAL)
+# DISCORD UI (MODAL + BUTTON)
 # ─────────────────────────────
 class InfoForm(discord.ui.Modal, title="Claim your free week"):
     first_name = discord.ui.TextInput(
@@ -176,7 +176,7 @@ class InfoForm(discord.ui.Modal, title="Claim your free week"):
         self.user_id = user_id
 
     async def on_submit(self, interaction: discord.Interaction):
-        # log to sheet
+        # write to responses sheet
         sheet_append_response(
             str(self.user_id),
             str(interaction.user),
@@ -185,23 +185,22 @@ class InfoForm(discord.ui.Modal, title="Claim your free week"):
             str(self.phone),
         )
 
-        # mark the user as completed in targets sheet
-        # we need to find their row
+        # mark user in targets
         try:
             sh = get_sheet_client()
             ws = sh.worksheet(TARGETS_WS_NAME)
             all_vals = ws.get_all_records()
-            # row 1 = header, so add 2
             for idx, r in enumerate(all_vals, start=2):
                 if str(r.get(COL_USER_ID)) == str(self.user_id):
                     now = datetime.datetime.utcnow().isoformat()
-                    ws.update_cell(idx, 5, now)  # completed_at
-                    ws.update_cell(idx, 6, "✅")  # form_submitted
+                    ws.update_cell(idx, TARGET_COL_COMPLETED_AT, now)
+                    ws.update_cell(idx, TARGET_COL_FORM_SUBMITTED, "✅")
+                    ws.update_cell(idx, TARGET_COL_STATUS, "✅ form submitted")
                     break
         except Exception as e:
             print(f"[sheets] marking completed failed: {e}")
 
-        # send the confirmation DM (ephemeral to the user)
+        # respond
         try:
             await interaction.response.send_message(
                 "Thanks for submitting your info.\n\n"
@@ -224,7 +223,6 @@ class ClaimView(discord.ui.View):
         custom_id="claim_free_week_btn",
     )
     async def claim(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # open the modal
         await interaction.response.send_modal(InfoForm(self.target_user_id))
 
 
@@ -246,13 +244,11 @@ def build_embed(body: str) -> discord.Embed:
 
 
 async def check_excluded(user_id: int) -> bool:
-    """Return True if user has any excluded role in TARGET_GUILD_ID. If we can't see them, return False."""
     guild = bot.get_guild(TARGET_GUILD_ID)
     if not guild:
         return False
     member = guild.get_member(user_id)
     if not member:
-        # we don't have members intent or user not in guild cache → allow
         return False
     member_roles = {r.id for r in member.roles}
     return any(rid in member_roles for rid in EXCLUDED_ROLE_IDS)
@@ -271,75 +267,79 @@ def iso_to_dt(s: str | None):
 # MAIN LOOPS
 # ─────────────────────────────
 async def broadcaster_loop():
-    """Loop through targets and send initial DMs to anyone who doesn't have initial_sent yet."""
+    """Send the FIRST DM to people who don't have initial_sent yet."""
     await bot.wait_until_ready()
     while not bot.is_closed():
         targets = await fetch_targets_if_needed()
         messages = await fetch_messages_if_needed()
 
-        initial_body = messages.get("initial_dm", "Hey <@user>, tap below to claim your free week.")
+        initial_body = messages.get(
+            "initial_dm",
+            "Hey <@user>, tap below to claim your free week.",
+        )
         now_iso = datetime.datetime.utcnow().isoformat()
 
-        for idx, row in enumerate(targets, start=2):  # 2 = header offset
+        for idx, row in enumerate(targets, start=2):
             user_id = str(row.get(COL_USER_ID, "")).strip()
             if not user_id:
                 continue
 
-            # skip if initial already sent
+            # already sent?
             if row.get(COL_INITIAL_SENT):
                 continue
 
             # role gate
             try:
                 if await check_excluded(int(user_id)):
-                    print(f"[gate] skipping {user_id} due to excluded role")
+                    # mark status and skip
+                    sheet_update_cell(idx, TARGET_COL_STATUS, "⛔ excluded role")
                     continue
             except Exception as e:
                 print(f"[gate] error checking roles: {e}")
 
-            # try DM
-            user = bot.get_user(int(user_id))
-            if not user:
+            # find user
+            user = bot.get_user(int(user_id)) if user_id.isdigit() else None
+            if not user and user_id.isdigit():
                 try:
                     user = await bot.fetch_user(int(user_id))
                 except Exception:
                     user = None
 
             if not user:
-                # log error
-                sheet_update_cell(idx, 7, "user not found")  # dm_error col
+                # update status + error
+                sheet_update_cell(idx, TARGET_COL_STATUS, "❌ user not found")
+                sheet_update_cell(idx, TARGET_COL_DM_ERROR, "404 Not Found (error code: 10013): Unknown User")
                 await send_log(f"⚠️ Could not DM `{user_id}` (user not found)")
                 continue
 
             # personalize
             content = initial_body.replace("<@user>", user.mention)
-
             try:
                 embed = build_embed(content)
                 view = ClaimView(int(user_id))
                 await user.send(embed=embed, view=view)
 
-                # mark initial_sent (col 2)
-                sheet_update_cell(idx, 2, now_iso)
-                # keep cache in sync
+                # write to sheet
+                sheet_update_cell(idx, TARGET_COL_STATUS, "✅ initial sent")
+                sheet_update_cell(idx, TARGET_COL_INITIAL_SENT, now_iso)
                 TARGETS_CACHE[idx - 2][COL_INITIAL_SENT] = now_iso
 
                 await send_log(f"📨 Sent initial DM to <@{user_id}> ({user_id})")
 
-                # IMPORTANT: only delay if we actually sent
+                # ONLY delay on success
                 await asyncio.sleep(INITIAL_DM_DELAY_SECONDS)
             except Exception as e:
                 print(f"[dm] error sending to {user_id}: {e}")
-                sheet_update_cell(idx, 7, str(e))  # dm_error
+                sheet_update_cell(idx, TARGET_COL_STATUS, "❌ DM failed")
+                sheet_update_cell(idx, TARGET_COL_DM_ERROR, str(e))
                 TARGETS_CACHE[idx - 2][COL_DM_ERROR] = str(e)
-                # no delay here – move on
+                # no delay
 
-        # sleep a bit before next scan
         await asyncio.sleep(60)
 
 
 async def followup_loop():
-    """Check every minute for people who need 24h or 72h follow-ups."""
+    """Send 24h and 72h follow-ups based on initial_sent timestamp."""
     await bot.wait_until_ready()
     while not bot.is_closed():
         targets = await fetch_targets_if_needed()
@@ -354,41 +354,39 @@ async def followup_loop():
             if not user_id:
                 continue
 
-            initial_sent_ts = iso_to_dt(row.get(COL_INITIAL_SENT))
-            if not initial_sent_ts:
-                # never sent initial → skip
+            initial_ts = iso_to_dt(row.get(COL_INITIAL_SENT))
+            if not initial_ts:
                 continue
 
             # 24h follow-up
             if not row.get(COL_REMINDER_SENT):
-                if (now - initial_sent_ts).total_seconds() >= 24 * 3600:
-                    # send 24h follow-up
-                    user = bot.get_user(int(user_id))
-                    if not user:
+                if (now - initial_ts).total_seconds() >= 24 * 3600:
+                    user = bot.get_user(int(user_id)) if user_id.isdigit() else None
+                    if not user and user_id.isdigit():
                         try:
                             user = await bot.fetch_user(int(user_id))
                         except Exception:
                             user = None
-
                     if user:
                         try:
                             embed = build_embed(follow24.replace("<@user>", user.mention))
                             view = ClaimView(int(user_id))
                             await user.send(embed=embed, view=view)
-                            sheet_update_cell(idx, 3, "✅")  # reminder_sent
+                            sheet_update_cell(idx, TARGET_COL_REMINDER_SENT, "✅")
+                            sheet_update_cell(idx, TARGET_COL_STATUS, "✅ 24h follow-up sent")
                             TARGETS_CACHE[idx - 2][COL_REMINDER_SENT] = "✅"
                             await send_log(f"🔁 Sent 24h follow-up to <@{user_id}> ({user_id})")
                             await asyncio.sleep(FOLLOWUP_DM_DELAY_SECONDS)
                         except Exception as e:
                             print(f"[dm] 24h error to {user_id}: {e}")
-                    continue  # don't also do 72h same pass
+                            sheet_update_cell(idx, TARGET_COL_DM_ERROR, str(e))
+                    continue  # don’t try 72h in same pass
 
             # 72h follow-up
             if not row.get(COL_SECOND_REMINDER_SENT):
-                # 72h from initial
-                if (now - initial_sent_ts).total_seconds() >= 72 * 3600:
-                    user = bot.get_user(int(user_id))
-                    if not user:
+                if (now - initial_ts).total_seconds() >= 72 * 3600:
+                    user = bot.get_user(int(user_id)) if user_id.isdigit() else None
+                    if not user and user_id.isdigit():
                         try:
                             user = await bot.fetch_user(int(user_id))
                         except Exception:
@@ -398,12 +396,14 @@ async def followup_loop():
                             embed = build_embed(follow72.replace("<@user>", user.mention))
                             view = ClaimView(int(user_id))
                             await user.send(embed=embed, view=view)
-                            sheet_update_cell(idx, 4, "✅")  # second_reminder_sent
+                            sheet_update_cell(idx, TARGET_COL_SECOND_REMINDER_SENT, "✅")
+                            sheet_update_cell(idx, TARGET_COL_STATUS, "✅ 72h follow-up sent")
                             TARGETS_CACHE[idx - 2][COL_SECOND_REMINDER_SENT] = "✅"
                             await send_log(f"🔁 Sent 72h follow-up to <@{user_id}> ({user_id})")
                             await asyncio.sleep(FOLLOWUP_DM_DELAY_SECONDS)
                         except Exception as e:
                             print(f"[dm] 72h error to {user_id}: {e}")
+                            sheet_update_cell(idx, TARGET_COL_DM_ERROR, str(e))
 
         await asyncio.sleep(60)
 
@@ -412,7 +412,6 @@ async def followup_loop():
 # COMMANDS
 # ─────────────────────────────
 def is_admin_interaction(interaction: discord.Interaction) -> bool:
-    # easiest: if they have administrator in that guild
     if interaction.user is None:
         return False
     if isinstance(interaction.user, discord.Member):
@@ -464,7 +463,6 @@ async def on_ready():
         print(f"[cmd sync] {e}")
 
     await send_log("🟣 Divine Messenger online.")
-    # start loops
     bot.loop.create_task(broadcaster_loop())
     bot.loop.create_task(followup_loop())
 
