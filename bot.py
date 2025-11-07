@@ -28,9 +28,7 @@ BANNER_URL = (
     "image.png?ex=690e6e8b&is=690d1d0b&hm=c119554967b072298d91b5f1fb1cfb75b0a815fcec29dcd8c4d32639248442b9&"
 )
 
-# in-memory message cache
 MESSAGE_CACHE = {}
-
 intents = discord.Intents.default()
 bot = commands.Bot(command_prefix="!", intents=intents)
 
@@ -82,18 +80,12 @@ def update_target_row(ws, row_index: int, updates: dict):
         ws.batch_update(batch)
 
 def load_messages():
-    """
-    Forgiving loader:
-    - column A = key
-    - column B = content
-    - starts at row 2
-    """
     global MESSAGE_CACHE
     ws = get_ws(MESSAGES_WS_NAME)
     keys = ws.col_values(1)
     contents = ws.col_values(2)
     cache = {}
-    for i in range(1, len(keys)):  # skip header
+    for i in range(1, len(keys)):
         k = (keys[i] or "").strip()
         if not k:
             continue
@@ -147,10 +139,8 @@ class InfoForm(discord.ui.Modal, title="Claim your free week"):
         self.add_item(self.phone)
 
     async def on_submit(self, interaction: discord.Interaction):
-        # respond right away so Discord doesn't time out
         await interaction.response.defer(ephemeral=True)
 
-        # log to responses sheet
         append_response(
             self.user_id,
             self.username,
@@ -161,7 +151,6 @@ class InfoForm(discord.ui.Modal, title="Claim your free week"):
             },
         )
 
-        # mark target as completed / form_submitted
         try:
             targets, ws = load_targets()
             for idx, row in enumerate(targets, start=2):
@@ -175,18 +164,15 @@ class InfoForm(discord.ui.Modal, title="Claim your free week"):
         except Exception as e:
             print("Error marking target completed:", e)
 
-        # notify in logs
         await log_to_channel(f"✅ Form submitted by `{self.username}` (ID: {self.user_id})")
 
-        # confirm to user
         await interaction.followup.send("✅ Thanks — your info was submitted.", ephemeral=True)
 
-        # DM claim link
         try:
             await interaction.user.send(
                 "Thanks for submitting your info.\n\n"
                 "To claim your free week of Divine, click the link below👇\n\n"
-                "https://whop.com/checkout/plan_XiUlT3C057H67?d2c=true"
+                "<https://whop.com/checkout/plan_XiUlT3C057H67?d2c=true>"
             )
         except Exception as e:
             print("Error sending claim DM:", e)
@@ -222,7 +208,7 @@ async def send_embed_dm(user: discord.User, message_key: str, fallback: str):
     await user.send(embed=embed, view=FormView(user))
 
 async def send_initial_dm(user: discord.User):
-    await send_embed_dm(user, "initial_dm", "Hey! Tap the button below to claim your free week.")
+    await send_embed_dm(user, "initial_dm", "Hey! Tap below to claim your free week.")
     await log_to_channel(f"📤 Sent initial DM to {user} (ID: {user.id})")
 
 async def send_24h_dm(user: discord.User):
@@ -258,14 +244,11 @@ async def on_ready():
 # COMMANDS
 # ------------------------------------------------
 @bot.tree.command(name="blast", description="DM all users from the targets sheet.")
-@app_commands.checks.has_permissions(administrator=True)
 async def blast(interaction: discord.Interaction):
-    # owner gate
     if OWNER_ID and interaction.user.id != OWNER_ID:
         await interaction.response.send_message("You can't run this.", ephemeral=True)
         return
 
-    # channel gate
     if LOG_CHANNEL_ID and interaction.channel_id != LOG_CHANNEL_ID:
         await interaction.response.send_message("Please run this command in the logs channel.", ephemeral=True)
         return
@@ -280,13 +263,17 @@ async def blast(interaction: discord.Interaction):
         status = str(row.get("status", "")).strip().lower()
         form_submitted = str(row.get("form_submitted", "")).strip().upper()
 
-        # consider ✅ as submitted too
         is_submitted = form_submitted in ("TRUE", "✅")
 
         if not user_id:
             continue
-        if status in ("initial_sent", "followup_24h_sent", "followup_72h_sent", "form_submitted", "completed") or is_submitted:
-            # already in the flow
+        if status in (
+            "initial_sent",
+            "followup_24h_sent",
+            "followup_72h_sent",
+            "form_submitted",
+            "completed",
+        ) or is_submitted:
             continue
 
         try:
@@ -296,6 +283,7 @@ async def blast(interaction: discord.Interaction):
                 "status": "initial_sent",
                 "initial_sent": "✅",
                 "dm_error": "",
+                "sent_at": iso_now(),
             })
             sent_count += 1
         except Exception as e:
@@ -309,12 +297,10 @@ async def blast(interaction: discord.Interaction):
 
 @bot.tree.command(name="test", description="Send all 3 Divine DMs to yourself (for testing).")
 async def test_command(interaction: discord.Interaction):
-    # owner gate
     if OWNER_ID and interaction.user.id != OWNER_ID:
         await interaction.response.send_message("You can't run this.", ephemeral=True)
         return
 
-    # logs channel gate
     if LOG_CHANNEL_ID and interaction.channel_id != LOG_CHANNEL_ID:
         await interaction.response.send_message("Please run this command in the logs channel.", ephemeral=True)
         return
@@ -335,13 +321,11 @@ async def test_command(interaction: discord.Interaction):
 # ------------------------------------------------
 @tasks.loop(minutes=5)
 async def followup_checker():
-    # reload messages silently
     try:
         load_messages()
     except Exception:
         pass
 
-    # load targets
     try:
         targets, ws = load_targets()
     except Exception as e:
@@ -362,27 +346,14 @@ async def followup_checker():
         second_reminder_sent = str(row.get("second_reminder_sent", "")).strip()
         completed_at = row.get("completed_at", "")
 
-        # stop everything if form is submitted or completed
         if form_submitted in ("✅", "TRUE") or status == "form_submitted" or completed_at:
             continue
 
-        # if initial not sent, nothing to do
         if not initial_sent:
             continue
 
-        # since we changed to emoji, we need to derive the time from status?
-        # easiest: just send at fixed intervals from initial_sent is not possible now
-        # so we keep using status to decide order, not time.
-        # BUT we still need a time anchor. We'll reuse completed_at idea?
-        # -> simple approach: we won't time-gate here since your main use is /blast.
-        # If you need exact 24h/72h with emojis, we'd store timestamps in hidden cols.
-        # For now, we assume previous version had timestamps; keep that behavior
-        # by checking old keys if present.
-
-        # backward compatibility: if there is an old sent_at timestamp, use it
         sent_at = row.get("sent_at", "")
         if not sent_at:
-            # no time info -> skip
             continue
 
         try:
@@ -392,7 +363,6 @@ async def followup_checker():
 
         delta = now - sent_time
 
-        # 24h follow-up
         if delta >= datetime.timedelta(hours=24) and not reminder_sent:
             try:
                 user = await bot.fetch_user(int(user_id))
@@ -405,7 +375,6 @@ async def followup_checker():
             except Exception as e:
                 await log_to_channel(f"⚠️ Failed 24h follow-up to {user_id}: `{e}`")
 
-        # 72h follow-up
         if delta >= datetime.timedelta(hours=72) and not second_reminder_sent:
             try:
                 user = await bot.fetch_user(int(user_id))
